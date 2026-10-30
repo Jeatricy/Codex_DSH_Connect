@@ -1,0 +1,16 @@
+{
+  "state_dir": ".bridge-data",
+  "profile": "acp",
+  "auto_review": true,
+  "default_reasoning_effort": "high",
+  "default_review_reasoning_effort": "inherit",
+  "default_timeout_sec": 600,
+  "startup_timeout_sec": 45,
+  "cancel_grace_sec": 15,
+  "close_grace_sec": 5,
+  "kill_grace_sec": 5,
+  "idle_warning_sec": 180,
+  "max_concurrent_tasks": 3,
+  "max_tool_calls": 100,
+  "max_log_bytes": 33554432
+}
