@@ -6,6 +6,7 @@ import { AcpWorker, bounded } from './worker.mjs';
 import { configureModel, modelCatalog } from './models.mjs';
 import { TaskStore, ACTIVE, TERMINAL } from './store.mjs';
 import { prepareReviewWorker, readReviewReport, validateReviewEffort } from './review-control.mjs';
+import { normalizeMcpServers, summarizeMcpServers } from './mcp.mjs';
 
 function canonicalCwd(cwd) {
   if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw new Error('cwd must be an absolute directory path.');
@@ -81,12 +82,14 @@ export class TaskManager {
     if (this.closing) throw new Error('Bridge is shutting down.');
     const cwd = canonicalCwd(input.cwd), taskText = text(input.task, 'task'), model = text(input.model, 'model');
     const { timeout, calls } = this.limits(input);
+    const mcpServers = normalizeMcpServers(input.mcp_servers === undefined ? [] : input.mcp_servers);
     const now = Date.now();
     const task = {
       id: randomUUID(), cwd, task: taskText, instructions: input.instructions || '',
       requested_model: model, requested_provider: input.provider,
       requested_reasoning_effort: input.reasoning_effort ?? this.config.defaultReasoningEffort,
       requested_review_reasoning_effort: input.review_reasoning_effort ?? this.config.defaultReviewReasoningEffort,
+      mcp_servers: mcpServers,
       permission_mode: this.config.autoReview ? 'auto' : 'dsh-profile', auto_review: null,
       state: 'starting', created_at: now, started_at: now, updated_at: now,
       deadline_at: now + timeout, timeout_ms: timeout, max_tool_calls: calls,
@@ -110,8 +113,10 @@ export class TaskManager {
       throw new Error('Review existing output and file changes, then set reviewed_partial_work=true before retrying.');
     }
     const { timeout, calls } = this.limits(input);
+    const mcpServers = normalizeMcpServers(input.mcp_servers === undefined ? (task.mcp_servers ?? []) : input.mcp_servers);
     task.turns.push({ started_at: task.started_at, ended_at: task.ended_at, state: task.state,
-      model: task.selected_model, auto_review: task.auto_review, error: task.error, cleanup: task.cleanup });
+      model: task.selected_model, auto_review: task.auto_review, error: task.error, cleanup: task.cleanup,
+      mcp_servers: summarizeMcpServers(task.mcp_servers) });
     Object.assign(task, {
       task: text(input.message, 'message'), state: 'starting', started_at: Date.now(), updated_at: Date.now(),
       ended_at: null, deadline_at: Date.now() + timeout, timeout_ms: timeout, max_tool_calls: calls,
@@ -123,6 +128,7 @@ export class TaskManager {
         ?? this.config.defaultReviewReasoningEffort,
       permission_mode: this.config.autoReview ? 'auto' : 'dsh-profile', auto_review: null,
       selected_model: null, owner_token: this.owner, bridge_pid: process.pid, guardian_pid: null,
+      mcp_servers: mcpServers,
       prompt_submitted: false, tool_calls: 0, error: null, cleanup: null, stop_reason: null,
       permissions: [], last_progress_at: Date.now(), last_progress: 'Resuming persistent DSH session',
     });
@@ -215,7 +221,7 @@ export class TaskManager {
       await worker.initialize();
       if (runtime.stopped) return;
       const session = await worker.request(resume ? 'session/resume' : 'session/new', {
-        ...(resume ? { sessionId: task.session_id } : {}), cwd: task.cwd, mcpServers: [],
+        ...(resume ? { sessionId: task.session_id } : {}), cwd: task.cwd, mcpServers: task.mcp_servers ?? [],
       });
       task.session_id = session.sessionId ?? task.session_id;
       if (!task.session_id) throw new Error('DSH did not return a session ID.');
@@ -329,7 +335,8 @@ export class TaskManager {
     }
     const output = this.store.read(id, 'answer.txt');
     return {
-      ...task, task: task.task.slice(0, 4000), instructions: task.instructions.slice(0, 2000),
+      ...task, mcp_servers: summarizeMcpServers(task.mcp_servers),
+      task: task.task.slice(0, 4000), instructions: task.instructions.slice(0, 2000),
       elapsed_sec: Math.round(((task.ended_at || Date.now()) - task.started_at) / 1000),
       no_progress_sec: Math.round((Date.now() - task.last_progress_at) / 1000),
       slow: ACTIVE.has(task.state) && Date.now() - task.last_progress_at > this.config.idleWarningMs,

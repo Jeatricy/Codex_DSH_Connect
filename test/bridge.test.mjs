@@ -72,6 +72,68 @@ test('tool argument validation rejects bad budgets, unknown keys and path traver
   await assert.rejects(callTool(m, 'deepseek_spawn', { cwd: '.', task: 'x', model: 'x' }), /absolute/);
 });
 
+test('MCP configuration rejects malformed or ambiguous connections before launching work', async t => {
+  const m = manager(t, 'mcp-validation'), cwd = workspace('mcp-validation');
+  const http = { type: 'http', name: 'UnityMCP', url: 'http://127.0.0.1:8080/mcp' };
+  const invalid = [null, {}, [null], [{ ...http, name: '../bad' }], [http, http],
+    [{ ...http, type: 'sse' }], [{ ...http, url: 'file:///local' }], [{ ...http, command: process.execPath }],
+    [{ ...http, headers: [{ name: 'Authorization', value: 'a' }, { name: 'authorization', value: 'b' }] }],
+    [{ ...http, headers: [{ name: 'X-Test', value: 'bad\r\nInjected: header' }] }],
+    [{ name: 'local', command: 'relative.exe' }], [{ name: 'local', command: process.execPath, args: [1] }],
+    [{ name: 'local', command: process.execPath, env: { TOKEN: 'value' } }],
+    [{ name: 'local', command: process.execPath, env: [{ name: 'A=B', value: 'value' }] }],
+    Array.from({ length: 33 }, (_, i) => ({ ...http, name: 'server' + i })),
+    [{ ...http, headers: [{ name: 'X-Test', value: 'x'.repeat(128001) }] }],
+  ];
+  for (const mcp_servers of invalid) {
+    const args = { cwd, task: 'Answer', model: 'model-a', mcp_servers };
+    assert.throws(() => validateArguments('deepseek_spawn', args), /mcp_servers/);
+    assert.throws(() => m.spawn(args), /mcp_servers/);
+  }
+  assert.deepEqual(m.list(), [], 'invalid attachments must not reserve workspaces or create tasks');
+});
+
+test('MCP attachments reach ACP new/resume, persist privately, inherit, replace and detach', async t => {
+  const m = manager(t, 'mcp-lifecycle'), cwd = workspace('mcp-lifecycle');
+  const capture = path.join(cwd, 'mcp.json'), taskText = `Answer\nMCP_CAPTURE_FILE=${capture}`;
+  const http = { type: 'http', name: 'UnityMCP', url: 'http://127.0.0.1:8080/mcp?token=fixture-url-secret',
+    headers: [{ name: 'Authorization', value: 'Bearer fixture-header-secret' }] };
+  const stdio = { type: 'stdio', name: 'local', command: process.execPath,
+    args: ['--token', 'fixture-arg-secret'], env: [{ name: 'TOKEN', value: 'fixture-env-secret' }] };
+  const expected = [structuredClone(http), { ...structuredClone(stdio) }]; delete expected[1].type;
+  const task = await callTool(m, 'deepseek_spawn', { cwd, task: taskText, model: 'model-a', mcp_servers: [http, stdio] });
+  http.headers[0].value = 'mutated-after-spawn'; stdio.args.push('mutated-after-spawn');
+  const first = await until(m, task.id, finished);
+  assert.equal(first.state, 'completed'); assert.deepEqual(JSON.parse(fs.readFileSync(capture)), expected);
+  for (const secret of ['fixture-url-secret', 'fixture-header-secret', 'fixture-arg-secret', 'fixture-env-secret']) {
+    assert.equal(JSON.stringify(first).includes(secret), false, 'status must contain connection summaries only');
+  }
+  assert.deepEqual(m.store.get(task.id).mcp_servers, expected, 'private state preserves credentials for resume');
+  await m.shutdown();
+  const resumed = manager(t, 'mcp-lifecycle');
+  await callTool(resumed, 'deepseek_send', { task_id: task.id, message: taskText });
+  const inherited = await until(resumed, task.id, finished);
+  assert.equal(inherited.state, 'completed'); assert.equal(inherited.session_id, first.session_id);
+  assert.deepEqual(JSON.parse(fs.readFileSync(capture)), expected, 'new bridge connection inherits persisted attachments');
+  assert.throws(() => resumed.send({ task_id: task.id, message: taskText, mcp_servers: null }), /mcp_servers/);
+  assert.deepEqual(resumed.store.get(task.id).mcp_servers, expected, 'invalid send leaves saved configuration untouched');
+  const replacement = [{ type: 'http', name: 'replacement', url: 'https://localhost/mcp' }];
+  await callTool(resumed, 'deepseek_send', { task_id: task.id, message: taskText, mcp_servers: replacement });
+  const replaced = await until(resumed, task.id, finished);
+  assert.equal(replaced.state, 'completed');
+  assert.deepEqual(JSON.parse(fs.readFileSync(capture)), [{ ...replacement[0], headers: [] }]);
+  await callTool(resumed, 'deepseek_send', { task_id: task.id, message: taskText, mcp_servers: [] });
+  const detached = await until(resumed, task.id, finished);
+  assert.equal(detached.state, 'completed'); assert.deepEqual(JSON.parse(fs.readFileSync(capture)), []);
+  for (const secret of ['fixture-url-secret', 'fixture-header-secret', 'fixture-arg-secret', 'fixture-env-secret']) {
+    assert.equal(JSON.stringify(detached).includes(secret), false, 'historical summaries must also omit credentials');
+  }
+  const legacy = resumed.store.get(task.id); delete legacy.mcp_servers; resumed.store.save(legacy);
+  resumed.send({ task_id: task.id, message: taskText });
+  assert.equal((await until(resumed, task.id, finished)).state, 'completed');
+  assert.deepEqual(JSON.parse(fs.readFileSync(capture)), [], 'tasks saved before this feature resume with no attachments');
+});
+
 test('real isolated worker discovers models and confirms selected model before prompt', async t => {
   const m = manager(t, 'selection'), cwd = workspace('selection');
   const catalog = await m.listModels({ cwd, model: 'model-b' });
@@ -207,10 +269,28 @@ test('MCP initialize, tool discovery and structured errors work over real stdio'
   const init = await peer.request('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
   assert.equal(init.serverInfo.name, 'codex-dsh-bridge');
   const tools = await peer.request('tools/list', {}); assert.equal(tools.tools.length, 11);
+  for (const name of ['deepseek_spawn', 'deepseek_send']) {
+    assert.equal(tools.tools.find(tool => tool.name === name).inputSchema.properties.mcp_servers.type, 'array');
+  }
   const error = await peer.request('tools/call', { name: 'deepseek_spawn', arguments: { task: 'incomplete' } });
   assert.equal(error.isError, true); assert.match(error.content[0].text, /Missing/);
   const catalog = await peer.request('tools/call', { name: 'deepseek_list_models', arguments: { cwd: workspace('mcp') } });
   assert.equal(catalog.structuredContent.models.length, 2);
+  const capture = path.join(workspace('mcp'), 'attached.json');
+  const attached = await peer.request('tools/call', { name: 'deepseek_spawn', arguments: {
+    cwd: workspace('mcp'), task: `Answer\nMCP_CAPTURE_FILE=${capture}`, model: 'model-a',
+    mcp_servers: [{ type: 'http', name: 'UnityMCP', url: 'http://127.0.0.1:8080/mcp' }],
+  } });
+  assert.equal(attached.isError, undefined);
+  const deadline = Date.now() + 20000;
+  let status;
+  do {
+    status = (await peer.request('tools/call', { name: 'deepseek_status', arguments: { task_id: attached.structuredContent.id } })).structuredContent;
+    if (finished(status)) break;
+    await delay(30);
+  } while (Date.now() < deadline);
+  assert.equal(status.state, 'completed'); assert.ok(status.cleanup.confirmed);
+  assert.deepEqual(JSON.parse(fs.readFileSync(capture)), [{ type: 'http', name: 'UnityMCP', url: 'http://127.0.0.1:8080/mcp', headers: [] }]);
 });
 
 test('a dead MCP bridge cannot leave its Windows task tree running; orphan recovery checks the guardian', { skip: process.platform !== 'win32' }, async t => {

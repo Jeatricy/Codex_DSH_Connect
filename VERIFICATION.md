@@ -1,5 +1,23 @@
 # 验证记录
 
+## 会话 MCP 配置传入 / 2026-10-31
+
+范围：`deepseek_spawn` / `deepseek_send` 新增 `mcp_servers`，支持 HTTP/stdio 校验、ACP 挂载、本地持久恢复、继续时继承/替换/移除及旧任务兼容；工具状态仅返回连接摘要。
+
+代码审查状态：**已经过代码审查**。本次由主代理直接自审当前差异及相关调用链，覆盖工具 schema、HTTP/stdio 规范化、启动前拒绝、任务持久化和恢复继承/覆盖/清空、旧记录兼容、连接摘要与现有审批/清理边界，未发现阻断问题；未做独立复核。关系图在该仓库为空，审查以实际源码和测试为准，未把图谱结果或自动化测试当作代码审查。
+
+隔离副本已运行完整 `node --run test`，**27/27 通过**，0 失败/跳过，约 57.4 秒。新增测试覆盖配置拒绝、真实独立 ACP 进程传参、跨桥接连接恢复、调用方对象变更隔离、凭据摘要及公开 MCP stdio 入口；既有原生 Auto review 和进程回收回归一并通过。HTTP 与 stdio 的 ACP 传参均已验证；真实服务端端到端使用下述 Unity HTTP 服务。
+
+正式仓库于 2026-10-31 再次执行完整 `node --run test`：27/27 通过，0 失败/跳过，约 55.8 秒。原生 Harness/审批测试使用本机确定性模型端点；本次未派发新的付费供应商任务。此次新生成的 7 个 .tmp 测试目录已清理，既有任务持久记录保留。
+
+写回正式仓库后，从新的 `server.mjs` stdio 进程通过公开 MCP `tools/list` / `tools/call` 验证新参数，无 worker 注入或私自绕过工具参数：
+
+- `deepseek_spawn(mcp_servers=[{type:"http",name:"UnityMCP",url:"http://127.0.0.1:8080/mcp"}])`：真实 `deepseek-official / deepseek-v4-flash` 执行 3 次原生调用，包含 `mcp__UnityMCP__manage_editor(action="telemetry_status")` 和实例/项目信息资源读取。
+- `deepseek_send` 省略 `mcp_servers`：同一 DSH 会话恢复，继承连接配置，执行 2 次原生调用，再次读到项目根目录 `E:/Unity Project/AnonPrismPiano`、Unity `6000.3.15f1`、平台 `StandaloneWindows64`。新建和恢复均保持 Auto review，审查失败数为 0，进程正常回收。
+- 故障连接 `http://127.0.0.1:1/mcp`：任务为 `failed`，`prompt_submitted=false`、工具调用 0 次、`cleanup.confirmed=true`，未回退到 Shell/CLI。
+
+真实通过任务 ID：`8c4ab9d9-81e8-4e2e-8a3f-d5b17985cb7d`；故障测试任务 ID：`b71d4bb2-cd1f-4e0a-b868-765f2be08f69`。测试期间没有修改 Unity 项目资源或长期 MCP 配置。当前客户端需重新载入桥接器或新建聊天以刷新缓存的工具参数定义；这不影响上述新进程公开接口验证结果。
+
 验证日期：2026-10-30（Asia/Shanghai）。环境为 Windows、Node.js 24.22.1、DeepSeek Harness 0.2.1（包版本 0.2.1-rc.5）。
 
 ## 0.2.0：Full access + 原生 Auto review

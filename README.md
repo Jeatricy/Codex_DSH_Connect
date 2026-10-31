@@ -55,6 +55,42 @@ DSH 自动化 profile 初次运行会在 DSH 自己的配置目录中初始化�
 
 `deepseek_spawn` 立即返回任务 ID。用 `deepseek_status` 或最长等待 20 秒的 `deepseek_wait` 查询；Codex 可以在此期间处理其他独立工作。`completed` 表示 ACP 返回了非空答案，主代理仍须验证结论、文件改动与测试证据。协议本身并不能证明代码工作正确。
 
+### 向 Harness 会话传入 MCP 服务
+
+`deepseek_spawn` 和 `deepseek_send` 支持可选参数 `mcp_servers`。桥接器在 ACP `session/new` / `session/resume` 时挂载这些服务，发现的工具以 `mcp__<name>__<tool>` 出现在 Harness 模型的原生工具清单中。连接或工具发现失败时，本轮在提交模型任务前失败；不改用 Shell/CLI，也不安装 MCP 服务。
+
+例如，让 Harness 直接读取当前 Unity 项目信息：
+
+```json
+{
+  "cwd": "E:\\Unity Project\\AnonPrismPiano",
+  "model": "[\"deepseek-official\",\"deepseek-v4-flash\"]",
+  "task": "只使用原生 Unity MCP 工具与资源，读取实例列表和项目根目录，确认目标为 AnonPrismPiano；不修改项目。",
+  "mcp_servers": [
+    { "type": "http", "name": "UnityMCP", "url": "http://127.0.0.1:8080/mcp" }
+  ]
+}
+```
+
+支持 ACP 的两种传输格式：
+
+- HTTP：`{ "type": "http", "name": "service", "url": "https://host/mcp", "headers": [{ "name": "Authorization", "value": "Bearer ..." }] }`，`headers` 可省略。
+- stdio：`{ "type": "stdio", "name": "service", "command": "C:\\absolute\\server.exe", "args": ["--mcp"], "env": [{ "name": "TOKEN", "value": "..." }] }`。`type`、`args`、`env` 可省略；命令必须是绝对路径，不经 Shell 拼接。
+
+`name` 为 1–32 位字母、数字、下划线或连字符，同一会话中不得重复。最多 32 个服务，整个配置的 UTF-8 JSON 不超过 128000 字节。不支持 SSE 或 ACP 作为 MCP 传输。项目的 `.mcp.json` 不会自动导入，服务需显式传入。
+
+新建任务省略 `mcp_servers` 等价于 `[]`。继续会话时省略则继承上一轮的配置；传入数组会整体替换，传入 `[]` 会移除全部挂载。旧任务没有该字段时按空数组恢复。配置先校验再创建任务/占用工作目录，调用者事后修改传入对象不会改变已接受的配置。
+
+恢复会话需要完整连接信息，因此认证 headers、环境变量和参数会保存在私有 `.bridge-data` 任务记录中，按凭据文件保管。工具状态响应中的 `mcp_servers` 和历史轮次仅返回服务名、传输及地址/命令摘要，隐藏 headers、env、args 和 URL 认证信息/查询值；MCP 返回的内容与进程错误仍可能进入任务日志。传入服务即授权该端点连接或 stdio 命令启动，模型的后续工具调用继续走现有原生 Auto review。
+
+更新桥接器代码后需在 Codex 中重新载入该 MCP 服务器，或新建聊天以刷新工具参数定义。
+
+### 等待与主聊天唤醒
+
+`mcp_servers` 负责给 DSH 挂载原生工具。当前版本提供 `deepseek_status` / `deepseek_wait` 查询和等待结果，不会主动唤醒已经结束回合的 Codex 主聊天；标准 MCP/ACP 进度通知也不代表主模型会自动续跑。需要全自动接续时，还需接入主应用实际支持的完成事件/唤醒机制，本版本未实现该功能。
+
+为减少主代理上下文，可在确有必要的状态查询中使用 `max_chars: 0`，完成后再读取一次最终答案和相关差异。任务在桥接器连接存活时后台执行；整个 MCP 连接断开会按现有取消策略清理任务，因此不能用关闭桥接器代替等待。
+
 ## 工具
 
 | 工具 | 用途 |

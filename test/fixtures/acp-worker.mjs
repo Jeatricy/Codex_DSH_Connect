@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 const first = JSON.stringify(['test-provider', 'model-a']);
 const second = JSON.stringify(['test-provider', 'model-b']);
 let selected = first, effort = 'low', session = 'fixture-session', active, ignore = false;
+let attachedServers = [];
 const keepalive = setInterval(() => {}, 1000);
 function send(message) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n'); }
 function result(id, value) { send({ id, result: value }); }
@@ -29,14 +30,16 @@ rl.on('line', line => {
   }
   switch (m.method) {
     case 'initialize': result(m.id, { protocolVersion: 1, agentCapabilities: { sessionCapabilities: { resume: {}, close: {} } } }); break;
-    case 'session/new': result(m.id, { sessionId: session, configOptions: options() }); break;
-    case 'session/resume': session = p.sessionId; result(m.id, { sessionId: session, configOptions: options() }); break;
+    case 'session/new': attachedServers = p.mcpServers; result(m.id, { sessionId: session, configOptions: options() }); break;
+    case 'session/resume': attachedServers = p.mcpServers; session = p.sessionId; result(m.id, { sessionId: session, configOptions: options() }); break;
     case 'session/set_config_option':
       if (p.configId === 'model') selected = p.value; else effort = p.value;
       result(m.id, { configOptions: options() }); break;
     case 'session/prompt': {
       active = m.id;
       const task = p.prompt.map(c => c.text || '').join('');
+      const mcpFile = task.match(/MCP_CAPTURE_FILE=([^\r\n]+)/)?.[1];
+      if (mcpFile) fs.writeFileSync(mcpFile.trim(), JSON.stringify(attachedServers));
       if (task.includes('TEST_CRASH')) { process.exit(22); break; }
       if (task.includes('TEST_IGNORE_CANCEL')) ignore = true;
       const childFile = task.match(/CHILD_PID_FILE=([^\r\n]+)/)?.[1];
