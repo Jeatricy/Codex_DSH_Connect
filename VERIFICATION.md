@@ -12,11 +12,15 @@
 
 首次受限沙箱回归中，既有原生 DSH 测试因无法写入用户 ACP profile 而失败（`EPERM ... cordis.yml`）；用户上下文重跑后全部通过。未以跳过测试或改弱断言处理该环境限制。
 
-当前验收边界：已验证本地等待、DSH 生命周期和 Codex Stop JSON 协议输出。真实桌面聊天从 Stop 到模型自动接续仍需在 Codex `/hooks` 审阅并信任安装的当前 hook，刷新 MCP 后实测；此项**未完成**，不据上述测试宣称已验证。安装器不改写信任记录。CLI `queue --resume` 在本机无可连接 daemon，只入队不能证明唤醒，未用于生产实现。
+当前验收状态：本地等待、DSH 生命周期、Stop JSON 输出和当前桌面聊天的原生自动接续均已验证。用户完成 hook 信任后，原生 `hooks/list` 返回 `trustStatus=trusted`、`enabled=true`，errors / warnings 均为空。安装器未改写信任记录。CLI 队列未用于生产实现。
 
 已在本机合并安装用户级 hook，原有 PostToolUse / SessionStart 保留并备份；原生 hooks 功能开关为启用。队列方案验收时创建的唯一测试消息已按确切消息 ID 清除，未保留在当前聊天队列。
 
-通过本机 Codex 0.166.0-alpha.5.1 的原生 `app-server hooks/list` 只读核验：新 hook 的 `eventName=stop`、`enabled=true`、`trustStatus=untrusted`，配置解析 errors / warnings 均为空。未创建新聊天、发送模型任务或改写信任记录；原生信任尚待用户完成。
+真实桌面端到端测试任务：`7e238fa4-72b3-48f4-a289-0ce5bfbbba63`，桥接器 0.3.0，模型 `deepseek-official / deepseek-flash`，执行强度 `low`、审查强度 `inherit`。当前聊天仍缓存旧版工具 schema，因此通过已注册桥接器的新 stdio 连接，以公开 `tools/call` 传入 `completion` 并明确指向当前父聊天；未手工写入通知任务或回执。
+
+主代理结束派发回合后，真实原生 hook `stop:2` 自动向同一聊天提交 completed 通知并接续模型，无需用户另发消息；随后主代理只读取一次最终状态。最终答案精确为 `DSH_NATIVE_STOP_HOOK_OK_20261031`，`state=completed`、`cleanup.confirmed=true`、`forced=false`、worker exit code 0；本地独立脚本读取到该轮原生回执后退出，MCP 连接正常关闭。Auto review 已激活；本次不调用工具，因此审查计数为 0，不将其表述为一次工具审批测试。真实桌面成功分支验收通过；其他异常分支以此前自动化回归为依据。
+
+本次仅发送一次真实模型短请求，不读取或修改 Unity 文件，没有模型侧状态轮询。测试完成后核对 Unity 与桥接器工作区状态，临时测试脚本清理，正式任务记录保留。当前聊天常规工具调用仍需刷新 MCP schema 才能直接使用新增参数。
 
 交付语义是本地至多一次通知，非跨崩溃可靠消息服务；记账后、stdout 交付前异常可能丢通知，可手动查询。关闭应用或 MCP 连接不会由本功能重新启动应用。
 
