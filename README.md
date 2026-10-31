@@ -53,7 +53,7 @@ DSH 自动化 profile 初次运行会在 DSH 自己的配置目录中初始化�
 
 `reasoning_effort` 控制执行任务的模型，当前配置默认 `high`，也可用 `model-default` 采用模型默认值（包括没有推理开关的模型）。`review_reasoning_effort` 控制每次原生 Auto 审查请求，默认 `inherit`（跟随被审查代理当前思考强度）；也可选 `model-default` 或该模型公开的具体档位，如 `off`、`low`、`high`、`max`。不同模型的词汇可能不同，以发现结果为准。审查仍使用被审查代理的供应商与模型，两个强度相互独立；未知强度在提交任务前报错。
 
-`deepseek_spawn` 立即返回任务 ID。用 `deepseek_status` 或最长等待 20 秒的 `deepseek_wait` 查询；Codex 可以在此期间处理其他独立工作。`completed` 表示 ACP 返回了非空答案，主代理仍须验证结论、文件改动与测试证据。协议本身并不能证明代码工作正确。
+`deepseek_spawn` 立即返回任务 ID。安装并信任下述完成 hook 后，可让本地程序等待结果，随后自动接续主聊天；未启用时用 `deepseek_status` 或最长等待 20 秒的 `deepseek_wait` 查询。`completed` 表示 ACP 返回了非空答案，主代理仍须验证结论、文件改动与测试证据。
 
 ### 向 Harness 会话传入 MCP 服务
 
@@ -87,9 +87,34 @@ DSH 自动化 profile 初次运行会在 DSH 自己的配置目录中初始化�
 
 ### 等待与主聊天唤醒
 
-`mcp_servers` 负责给 DSH 挂载原生工具。当前版本提供 `deepseek_status` / `deepseek_wait` 查询和等待结果，不会主动唤醒已经结束回合的 Codex 主聊天；标准 MCP/ACP 进度通知也不代表主模型会自动续跑。需要全自动接续时，还需接入主应用实际支持的完成事件/唤醒机制，本版本未实现该功能。
+0.3.0 新增可选 `completion` 参数，使用 Codex 原生同步 **Stop hook** 接续当前主聊天。安装：
 
-为减少主代理上下文，可在确有必要的状态查询中使用 `max_chars: 0`，完成后再读取一次最终答案和相关差异。任务在桥接器连接存活时后台执行；整个 MCP 连接断开会按现有取消策略清理任务，因此不能用关闭桥接器代替等待。
+```powershell
+node scripts/install-completion.mjs
+```
+
+安装器在用户级 `hooks.json` 合并一个 Stop hook，保留其他 hook，修改前保存备份。自定义桥接配置使用 `--config PATH`，或直接 `--state-dir PATH`；自定义 hook 文件使用 `--hooks-file PATH`。卸载使用同一参数加 `--uninstall`。安装器不改写 hook 信任记录。
+
+在 Codex CLI 中通过 `/hooks` 审阅并信任 **DSH bridge completion (local wait)** 的当前定义，再重新载入 MCP 服务器。新建或修改的非托管 hook 在信任前会被跳过；不能仅凭安装器成功就认定已启用。详情见 [Codex 官方 Hooks 文档](https://learn.chatgpt.com/docs/hooks)。
+
+派发时添加：
+
+```json
+"completion": {
+  "thread_id": "当前父聊天的 CODEX_THREAD_ID（UUID）",
+  "follow_up": "完成后检查实际差异，运行相关测试，验收并报告。"
+}
+```
+
+`thread_id` 必须由父代理明确提供、指向用户授权的当前聊天；桥接器不会从共享进程环境猜测目标。`follow_up` 最多 2000 字符，只写父代理安排的后续工作。省略 `completion` 的新任务保持手动等待；`deepseek_send` 省略时继承目标和后续说明，每轮生成新的去重 ID；传入对象替换配置，传入 `null` 关闭。
+
+启用后主代理完成派发回合即可，不需要循环调用查询工具。Stop hook 作为本地 Node 进程读取 SQLite，每秒检查一次，不调用主模型或 DSH 模型。它等待任务写入最终状态与清理结果，在完成、失败、取消、超时、清理未确认或待处理权限时返回简短事件，Codex 按原生 Stop 协议自动发起一次接续。主代理随后读取一次最终结果并按范围审查、测试；必要状态查询使用 `max_chars: 0`。权限已通知而仍待用户处理时，hook 允许回合结束。
+
+通知仅含任务 ID、状态、清理标志和父代理安排的后续说明，不含子模型答案、工具输出、错误原文、完整日志或 MCP 凭据。SQLite 独立回执表原子去重，多个 hook 进程竞争同一事件只交付一次；这是本地至多一次交付，进程在记账后、输出前崩溃可能丢失该通知，仍可手动查状态。
+
+审查快照在 Windows 短暂文件锁定时最多重试 200 ms；原生审查尚有未收齐结果的请求时，即使模型返回了答案，桥接器也将该轮标为失败，避免误发完成状态。
+
+此方式接续的是仍打开且保有 MCP 连接的会话，不能重启已关闭的 Codex 应用。整个 MCP 连接断开仍按现有策略取消任务；桥接器死亡或本地等待超过约 122 分钟时，返回一次恢复事件，不自动重试或结束未知进程。hook 超时设为 124 分钟，覆盖最长 120 分钟任务及常规清理；用户中断、应用退出或 hook 失败时仍须手动查看状态。不要把标准 MCP 进度通知、异步 hook 或 CLI 队列入队成功当作聊天已被唤醒。
 
 ## 工具
 

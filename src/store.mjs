@@ -19,7 +19,9 @@ export class TaskStore {
     this.db.exec(`PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, record TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS commands (id TEXT PRIMARY KEY, owner TEXT NOT NULL,
-        operation TEXT NOT NULL, payload TEXT NOT NULL, result TEXT, created INTEGER NOT NULL);`);
+        operation TEXT NOT NULL, payload TEXT NOT NULL, result TEXT, created INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS continuation_receipts (event_key TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL, delivered_at INTEGER NOT NULL);`);
   }
   get(id) {
     const row = this.db.prepare('SELECT record FROM tasks WHERE id=?').get(id);

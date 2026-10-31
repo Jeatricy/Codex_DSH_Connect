@@ -7,6 +7,7 @@ import { configureModel, modelCatalog } from './models.mjs';
 import { TaskStore, ACTIVE, TERMINAL } from './store.mjs';
 import { prepareReviewWorker, readReviewReport, validateReviewEffort } from './review-control.mjs';
 import { normalizeMcpServers, summarizeMcpServers } from './mcp.mjs';
+import { nextCompletion } from './completion.mjs';
 
 function canonicalCwd(cwd) {
   if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) throw new Error('cwd must be an absolute directory path.');
@@ -83,13 +84,14 @@ export class TaskManager {
     const cwd = canonicalCwd(input.cwd), taskText = text(input.task, 'task'), model = text(input.model, 'model');
     const { timeout, calls } = this.limits(input);
     const mcpServers = normalizeMcpServers(input.mcp_servers === undefined ? [] : input.mcp_servers);
+    const completion = nextCompletion(input.completion);
     const now = Date.now();
     const task = {
       id: randomUUID(), cwd, task: taskText, instructions: input.instructions || '',
       requested_model: model, requested_provider: input.provider,
       requested_reasoning_effort: input.reasoning_effort ?? this.config.defaultReasoningEffort,
       requested_review_reasoning_effort: input.review_reasoning_effort ?? this.config.defaultReviewReasoningEffort,
-      mcp_servers: mcpServers,
+      mcp_servers: mcpServers, completion,
       permission_mode: this.config.autoReview ? 'auto' : 'dsh-profile', auto_review: null,
       state: 'starting', created_at: now, started_at: now, updated_at: now,
       deadline_at: now + timeout, timeout_ms: timeout, max_tool_calls: calls,
@@ -114,6 +116,7 @@ export class TaskManager {
     }
     const { timeout, calls } = this.limits(input);
     const mcpServers = normalizeMcpServers(input.mcp_servers === undefined ? (task.mcp_servers ?? []) : input.mcp_servers);
+    const completion = nextCompletion(input.completion, task.completion);
     task.turns.push({ started_at: task.started_at, ended_at: task.ended_at, state: task.state,
       model: task.selected_model, auto_review: task.auto_review, error: task.error, cleanup: task.cleanup,
       mcp_servers: summarizeMcpServers(task.mcp_servers) });
@@ -128,7 +131,7 @@ export class TaskManager {
         ?? this.config.defaultReviewReasoningEffort,
       permission_mode: this.config.autoReview ? 'auto' : 'dsh-profile', auto_review: null,
       selected_model: null, owner_token: this.owner, bridge_pid: process.pid, guardian_pid: null,
-      mcp_servers: mcpServers,
+      mcp_servers: mcpServers, completion,
       prompt_submitted: false, tool_calls: 0, error: null, cleanup: null, stop_reason: null,
       permissions: [], last_progress_at: Date.now(), last_progress: 'Resuming persistent DSH session',
     });
@@ -265,8 +268,10 @@ export class TaskManager {
       if (runtime.reviewControl && task.session_id) {
         try { task.auto_review = readReviewReport(runtime.reviewControl, task.session_id); } catch {}
       }
-      if (!runtime.stopped && outcome === 'completed' && task.auto_review?.reviews_failed > 0) {
-        outcome = 'failed'; task.error = `DSH Auto review failed: ${task.auto_review.last_review?.error || 'review request failed'}`;
+      if (!runtime.stopped && outcome === 'completed' && task.auto_review
+        && (task.auto_review.reviews_failed > 0 || task.auto_review.reviews_started
+          > task.auto_review.reviews_completed + task.auto_review.reviews_failed)) {
+        outcome = 'failed'; task.error = `DSH Auto review failed: ${task.auto_review.last_review?.error || 'review report incomplete or request failed'}`;
       }
       task.state = cleanup.confirmed ? runtime.stopOutcome || outcome : 'stop_unconfirmed';
       task.ended_at = Date.now(); this.save(runtime); this.live.delete(task.id);

@@ -1,13 +1,13 @@
 {
   "name": "codex-dsh-bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Local MCP server delegating isolated, supervised tasks to DeepSeek Harness over ACP.",
   "engines": { "node": ">=22.13" },
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test --test-concurrency=1 test/bridge.test.mjs test/native-auto.test.mjs",
+    "test": "node --test --test-concurrency=1 test/bridge.test.mjs test/completion.test.mjs test/native-auto.test.mjs",
     "doctor": "node scripts/doctor.mjs"
   }
 }

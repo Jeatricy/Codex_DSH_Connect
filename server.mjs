@@ -19,8 +19,8 @@ rpc.onRequest = async (method, params) => {
     const supported = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
     return {
       protocolVersion: supported.includes(params.protocolVersion) ? params.protocolVersion : supported[0],
-      serverInfo: { name: 'codex-dsh-bridge', version: '0.2.0' }, capabilities: { tools: { listChanged: false } },
-      instructions: 'Delegate with deepseek_spawn using an explicit model from deepseek_list_models. This bridge enables DSH native Auto review with Full access, verified before prompt submission. reasoning_effort controls the task; review_reasoning_effort controls its reviewer (default inherit). Spawn is asynchronous; collect results, inspect review telemetry, validate changes. Deadlines/cancellation are independent. No model fallback. Overlapping workspaces are serialized. Respond to actual one-shot permissions within user scope.',
+      serverInfo: { name: 'codex-dsh-bridge', version: '0.3.0' }, capabilities: { tools: { listChanged: false } },
+      instructions: 'Delegate with deepseek_spawn using an explicit model from deepseek_list_models. This bridge enables DSH native Auto review with Full access, verified before prompt submission. reasoning_effort controls the task; review_reasoning_effort controls its reviewer (default inherit). Spawn is asynchronous. If the completion Stop hook is installed and trusted, set completion with the explicit current parent CODEX_THREAD_ID and a concise parent-authored follow_up. Finish the dispatch turn instead of polling; the local hook waits and continues this chat on completion or permission. Read final output once, inspect review telemetry and actual changes, and run relevant tests. Without a trusted hook use bounded status/wait. Deadlines/cancellation are independent. No model fallback. Overlapping workspaces are serialized. Respond to actual one-shot permissions within user scope.',
     };
   }
   if (method === 'ping') return {};

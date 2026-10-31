@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
+import { writeReviewReport } from './review-report.mjs';
 
 // Reuse the shipped DSH review policy, parser and pre-execute gate unchanged.
 // This adapter supplies ACP parent provenance, reasoning controls and telemetry.
@@ -14,10 +15,7 @@ export function installNativeReview(ctx, native, control) {
     reviews_started: 0, reviews_completed: 0, reviews_failed: 0, last_review: null,
   };
   const safeError = error => String(error?.message || error).replace(/\bsk-[A-Za-z0-9_-]{12,}/g, '[redacted-key]').slice(0, 2000);
-  const save = () => {
-    fs.writeFileSync(control.report_file + '.tmp', JSON.stringify(report, null, 2));
-    fs.renameSync(control.report_file + '.tmp', control.report_file);
-  };
+  const save = () => writeReviewReport(control.report_file, report);
   const record = data => {
     fs.appendFileSync(control.events_file, JSON.stringify({ time: Date.now(), ...data }) + '\n');
     save();
